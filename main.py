@@ -1,56 +1,55 @@
-import json
+from dotenv import load_dotenv
+import streamlit as st
+from PyPDF2 import PdfReader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.chains.question_answering import load_qa_chain
+from langchain.llms import OpenAI
+from langchain.callbacks import get_openai_callback
 
-import quart
-import quart_cors
-from quart import request
-
-app = quart_cors.cors(quart.Quart(__name__), allow_origin="https://chat.openai.com")
-
-# Keep track of todo's. Does not persist if Python session is restarted.
-_TODOS = {}
-
-@app.post("/todos/<string:username>")
-async def add_todo(username):
-    request = await quart.request.get_json(force=True)
-    if username not in _TODOS:
-        _TODOS[username] = []
-    _TODOS[username].append(request["todo"])
-    return quart.Response(response='OK', status=200)
-
-@app.get("/todos/<string:username>")
-async def get_todos(username):
-    return quart.Response(response=json.dumps(_TODOS.get(username, [])), status=200)
-
-@app.delete("/todos/<string:username>")
-async def delete_todo(username):
-    request = await quart.request.get_json(force=True)
-    todo_idx = request["todo_idx"]
-    # fail silently, it's a simple plugin
-    if 0 <= todo_idx < len(_TODOS[username]):
-        _TODOS[username].pop(todo_idx)
-    return quart.Response(response='OK', status=200)
-
-@app.get("/logo.png")
-async def plugin_logo():
-    filename = 'logo.png'
-    return await quart.send_file(filename, mimetype='image/png')
-
-@app.get("/.well-known/ai-plugin.json")
-async def plugin_manifest():
-    host = request.headers['Host']
-    with open("./.well-known/ai-plugin.json") as f:
-        text = f.read()
-        return quart.Response(text, mimetype="text/json")
-
-@app.get("/openapi.yaml")
-async def openapi_spec():
-    host = request.headers['Host']
-    with open("openapi.yaml") as f:
-        text = f.read()
-        return quart.Response(text, mimetype="text/yaml")
 
 def main():
-    app.run(debug=True, host="0.0.0.0", port=5003)
+    load_dotenv()
+    st.set_page_config(page_title="Ask your PDF")
+    st.header("Ask your PDF 💬")
+    
+    # upload file
+    pdf = st.file_uploader("Upload your PDF", type="pdf")
+    
+    # extract the text
+    if pdf is not None:
+      pdf_reader = PdfReader(pdf)
+      text = ""
+      for page in pdf_reader.pages:
+        text += page.extract_text()
+        
+      # split into chunks
+      text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+      )
+      chunks = text_splitter.split_text(text)
+      
+      # create embeddings
+      embeddings = OpenAIEmbeddings()
+      knowledge_base = FAISS.from_texts(chunks, embeddings)
+      
+      # show user input
+      user_question = st.text_input("Ask a question about your PDF:")
+      if user_question:
+        docs = knowledge_base.similarity_search(user_question)
+        
+        llm = OpenAI()
+        chain = load_qa_chain(llm, chain_type="stuff")
+        with get_openai_callback() as cb:
+          response = chain.run(input_documents=docs, question=user_question)
+          print(cb)
+           
+        st.write(response)
+    
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
